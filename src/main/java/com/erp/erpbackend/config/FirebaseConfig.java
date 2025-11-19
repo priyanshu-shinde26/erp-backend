@@ -68,4 +68,8 @@ public class FirebaseConfig {
         log.info("rolesRef DatabaseReference bean created (path = /roles)");
         return ref;
     }
+    @Bean(name = "attendanceRef")
+    public DatabaseReference attendanceRef(FirebaseDatabase firebaseDatabase) {
+        return firebaseDatabase.getReference("attendance");
+    }
 }

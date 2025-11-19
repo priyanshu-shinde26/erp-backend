@@ -1,77 +1,104 @@
 package com.erp.erpbackend.service;
 
-import com.google.firebase.database.DataSnapshot;
-import com.google.firebase.database.DatabaseReference;
-import com.google.firebase.database.ValueEventListener;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.google.firebase.database.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class RoleService {
-    private final Logger log = LoggerFactory.getLogger(RoleService.class);
+
     private final DatabaseReference rolesRef;
-    private final ConcurrentHashMap<String, CachedRole> cache = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
-    private static final long CACHE_TTL_SECONDS = 60L;
 
     public RoleService(@Qualifier("rolesRef") DatabaseReference rolesRef) {
         this.rolesRef = rolesRef;
-        cleaner.scheduleAtFixedRate(this::cleanup, CACHE_TTL_SECONDS, CACHE_TTL_SECONDS, TimeUnit.SECONDS);
+        System.out.println("RoleService: rolesRef path = " + rolesRef.getPath().toString());
     }
 
+    /**
+     * Get role for UID from /roles/{uid}.
+     * Returns "STUDENT" if none is stored.
+     * Does NOT write anything.
+     */
     public String getRoleForUid(String uid) {
-        if (uid == null) return null;
-        CachedRole cached = cache.get(uid);
-        if (cached != null && !cached.isExpired()) return cached.role;
+        if (uid == null || uid.isBlank()) {
+            return "STUDENT";
+        }
 
-        final CountDownLatch latch = new CountDownLatch(1);
-        final String[] holder = new String[1];
+        AtomicReference<String> roleRef = new AtomicReference<>("STUDENT");
+        CountDownLatch latch = new CountDownLatch(1);
 
         rolesRef.child(uid).addListenerForSingleValueEvent(new ValueEventListener() {
             @Override
             public void onDataChange(DataSnapshot snapshot) {
                 if (snapshot.exists()) {
-                    Object v = snapshot.getValue();
-                    if (v != null) holder[0] = v.toString();
+                    String value = snapshot.getValue(String.class);
+                    if (value != null && !value.isBlank()) {
+                        roleRef.set(value.toUpperCase());
+                    }
                 }
                 latch.countDown();
             }
 
             @Override
-            public void onCancelled(com.google.firebase.database.DatabaseError error) {
-                log.warn("rolesRef read cancelled: {}", error.getMessage());
+            public void onCancelled(DatabaseError error) {
+                System.err.println("RoleService.getRoleForUid cancelled: " + error);
                 latch.countDown();
             }
         });
 
         try {
-            latch.await(5, TimeUnit.SECONDS);
+            latch.await(3, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("Interrupted while waiting for rolesRef read", e);
         }
 
-        String role = holder[0];
-        cache.put(uid, new CachedRole(role, System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CACHE_TTL_SECONDS)));
-        return role;
+        String finalRole = roleRef.get();
+        System.out.println("RoleService.getRoleForUid(" + uid + ") -> " + finalRole);
+        return finalRole;
     }
 
-    private void cleanup() {
-        long now = System.currentTimeMillis();
-        for (Map.Entry<String, CachedRole> e : cache.entrySet()) {
-            if (e.getValue().expiry < now) cache.remove(e.getKey());
-        }
+    /**
+     * Only set default role if it is completely missing.
+     * Existing ADMIN / TEACHER / anything will NOT be changed.
+     */
+    public void ensureDefaultRoleIfMissing(String uid, String defaultRole) {
+        String existing = getRoleForUid(uid);   // <-- only READS, does not write
+        String roleToSet = (defaultRole == null || defaultRole.isBlank())
+                ? "STUDENT"
+                : defaultRole.toUpperCase();
+
+        rolesRef.child(uid).runTransaction(new Transaction.Handler() {
+            @Override
+            public Transaction.Result doTransaction(MutableData currentData) {
+                if (currentData.getValue() == null) {
+                    currentData.setValue(roleToSet);   // <-- ONLY if null
+                }
+                // if not null, keep existing value (maybe ADMIN)
+                return Transaction.success(currentData);
+            }
+
+            @Override
+            public void onComplete(DatabaseError error, boolean committed, DataSnapshot snapshot) {
+                if (error != null) {
+                    System.err.println("ensureDefaultRoleIfMissing error: " + error);
+                }
+            }
+        });
     }
 
-    private static class CachedRole {
-        final String role;
-        final long expiry;
-        CachedRole(String role, long expiry) { this.role = role; this.expiry = expiry; }
-        boolean isExpired() { return System.currentTimeMillis() > expiry; }
+
+
+    /**
+     * Manual setter for promotion via Postman / console.
+     */
+    public void setRole(String uid, String role) {
+        if (uid == null || uid.isBlank() || role == null || role.isBlank()) return;
+        String normalized = role.toUpperCase();
+        System.out.println("RoleService.setRole(" + uid + ", " + normalized + ")");
+        rolesRef.child(uid).setValueAsync(normalized);
     }
 }
