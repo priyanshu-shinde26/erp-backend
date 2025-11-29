@@ -18,11 +18,6 @@ public class RoleService {
         System.out.println("RoleService: rolesRef path = " + rolesRef.getPath().toString());
     }
 
-    /**
-     * Get role for UID from /roles/{uid}.
-     * Returns "STUDENT" if none is stored.
-     * Does NOT write anything.
-     */
     public String getRoleForUid(String uid) {
         if (uid == null || uid.isBlank()) {
             return "STUDENT";
@@ -61,12 +56,7 @@ public class RoleService {
         return finalRole;
     }
 
-    /**
-     * Only set default role if it is completely missing.
-     * Existing ADMIN / TEACHER / anything will NOT be changed.
-     */
     public void ensureDefaultRoleIfMissing(String uid, String defaultRole) {
-        String existing = getRoleForUid(uid);   // <-- only READS, does not write
         String roleToSet = (defaultRole == null || defaultRole.isBlank())
                 ? "STUDENT"
                 : defaultRole.toUpperCase();
@@ -75,9 +65,8 @@ public class RoleService {
             @Override
             public Transaction.Result doTransaction(MutableData currentData) {
                 if (currentData.getValue() == null) {
-                    currentData.setValue(roleToSet);   // <-- ONLY if null
+                    currentData.setValue(roleToSet);
                 }
-                // if not null, keep existing value (maybe ADMIN)
                 return Transaction.success(currentData);
             }
 
@@ -90,15 +79,16 @@ public class RoleService {
         });
     }
 
-
-
-    /**
-     * Manual setter for promotion via Postman / console.
-     */
     public void setRole(String uid, String role) {
         if (uid == null || uid.isBlank() || role == null || role.isBlank()) return;
         String normalized = role.toUpperCase();
         System.out.println("RoleService.setRole(" + uid + ", " + normalized + ")");
         rolesRef.child(uid).setValueAsync(normalized);
+    }
+
+    // NEW: helper for security
+    public boolean hasRole(String uid, String role) {
+        String actual = getRoleForUid(uid);
+        return actual.equalsIgnoreCase(role);
     }
 }

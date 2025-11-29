@@ -20,26 +20,24 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
                                            FirebaseTokenFilter firebaseTokenFilter) throws Exception {
+
         http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        // Test endpoint – open
-                        .requestMatchers("/api/test/firebase").permitAll()
+                        // ---- Public / test endpoints ----
+                        .requestMatchers("/api/test/**").permitAll()
 
-                        // ==== Students API ====
+                        // ---- Assignment module (Firebase token required) ----
+                        .requestMatchers("/api/assignments/**").authenticated()
+
+                        // ---- Your existing APIs (adjust as you need) ----
                         .requestMatchers("/api/students/debug/**").hasRole("ADMIN")
                         .requestMatchers("/api/students/**").authenticated()
 
-                        // ==== Attendance API ====
                         .requestMatchers("/api/attendance/**").authenticated()
-                        // (If later you want only ADMIN+TEACHER: use .hasAnyRole("ADMIN","TEACHER"))
 
-                        // ==== Timetable API ====
-                        // Everyone logged in (ADMIN, TEACHER, STUDENT) can VIEW timetable
                         .requestMatchers(HttpMethod.GET, "/api/timetable/**")
                         .hasAnyRole("ADMIN", "TEACHER", "STUDENT")
-
-                        // Only ADMIN + TEACHER can CREATE / UPDATE / DELETE timetable
                         .requestMatchers(HttpMethod.POST, "/api/timetable/**")
                         .hasAnyRole("ADMIN", "TEACHER")
                         .requestMatchers(HttpMethod.PUT, "/api/timetable/**")
@@ -47,9 +45,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.DELETE, "/api/timetable/**")
                         .hasAnyRole("ADMIN", "TEACHER")
 
-                        // ==== Everything else ====
+                        // Everything else (if you want them open):
                         .anyRequest().permitAll()
                 )
+                // Insert FirebaseTokenFilter before Spring's auth filter
                 .addFilterBefore(firebaseTokenFilter, UsernamePasswordAuthenticationFilter.class)
                 .httpBasic(Customizer.withDefaults());
 
