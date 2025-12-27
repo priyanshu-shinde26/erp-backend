@@ -3,6 +3,7 @@ package com.erp.erpbackend.assignment;
 import com.erp.erpbackend.assignment.AssignmentDtos.CreateAssignmentRequest;
 import com.erp.erpbackend.assignment.AssignmentDtos.UpdateAssignmentRequest;
 import com.erp.erpbackend.assignment.AssignmentDtos.GradeSubmissionRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -11,6 +12,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/assignments")
@@ -102,14 +104,29 @@ public class AssignmentController {
 
     // STUDENT: submit assignment PDF
     @PostMapping("/submissions/upload")
-    public ResponseEntity<AssignmentSubmission> submitAssignment(
+    public ResponseEntity<?> submitAssignment(
             @RequestParam("assignmentId") String assignmentId,
             @RequestParam("file") MultipartFile file) throws IOException {
 
         String uid = currentUid();
-        AssignmentSubmission submission = assignmentService.submitAssignment(assignmentId, uid, file);
+
+        // 🔴 FETCH ASSIGNMENT
+        Assignment assignment = assignmentService.getAssignment(assignmentId);
+
+        // 🔴 BLOCK LATE / INACTIVE SUBMISSION
+        if (!assignment.isSubmissionAllowed()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of(
+                            "error", "Assignment is closed. Submission not allowed."
+                    ));
+        }
+
+        AssignmentSubmission submission =
+                assignmentService.submitAssignment(assignmentId, uid, file);
+
         return ResponseEntity.ok(submission);
     }
+
 
     // STUDENT: delete own submission
     @DeleteMapping("/{assignmentId}/submissions/{submissionId}")

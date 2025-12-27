@@ -19,7 +19,9 @@ public class AttendanceService {
         System.out.println("AttendanceService: Firebase DatabaseReference initialized.");
     }
 
-    // ------------------- MARK ATTENDANCE --------------------
+    // =========================================================
+    // OLD METHOD (UNCHANGED – UID BASED)
+    // =========================================================
 
     public void markAttendance(String courseId,
                                String date,
@@ -34,9 +36,8 @@ public class AttendanceService {
             throw new IllegalArgumentException("studentUid is required");
 
         if (status == null || status.isBlank())
-            throw new IllegalArgumentException("status is required (PRESENT / ABSENT)");
+            throw new IllegalArgumentException("status is required");
 
-        // if courseId is null/blank, use a generic bucket
         String effectiveCourseId = (courseId == null || courseId.isBlank())
                 ? "GENERAL"
                 : courseId.trim();
@@ -60,76 +61,216 @@ public class AttendanceService {
                 .setValueAsync(record);
     }
 
-    // ------------------- GET ATTENDANCE --------------------
+    // =========================================================
+    // NEW METHOD (ROLL NUMBER BASED – REQUIRED)
+    // =========================================================
 
-    /**
-     * If courseId is null/blank → return records from **all courses** for this student.
-     * If courseId is provided → filter only that course.
-     */
-    public List<AttendanceRecord> getAttendanceForStudent(String courseId,
-                                                          String studentUid) {
+    public void markAttendanceByRollNumber(String rollNumber,
+                                           String date,
+                                           String status,
+                                           String markedBy) {
 
-        if (studentUid == null || studentUid.isBlank())
-            throw new IllegalArgumentException("studentUid is required");
+        if (rollNumber == null || rollNumber.isBlank())
+            throw new IllegalArgumentException("rollNumber is required");
 
+        if (date == null || date.isBlank())
+            throw new IllegalArgumentException("date is required");
+
+        if (status == null || status.isBlank())
+            throw new IllegalArgumentException("status is required");
+
+        String normalizedStatus = status.trim().toUpperCase();
+        if (!normalizedStatus.equals("PRESENT") && !normalizedStatus.equals("ABSENT"))
+            throw new IllegalArgumentException("status must be PRESENT or ABSENT");
+
+        // Firebase path:
+        // attendance/ROLL_NUMBER/yyyy-MM-dd/{rollNumber}
+        DatabaseReference ref = attendanceRef
+                .child("ROLL_NUMBER")
+                .child(date)
+                .child(rollNumber);
+
+        AttendanceRecord record = new AttendanceRecord();
+        record.setRollNumber(rollNumber);
+        record.setDate(date);
+        record.setStatus(normalizedStatus);
+        record.setMarkedBy(markedBy);
+
+        ref.setValueAsync(record);
+    }
+
+    // =========================================================
+    // NEW METHOD (CLASS + ROLL NUMBER BASED)
+    // =========================================================
+
+    public void markAttendanceByClass(String classId,
+                                      String rollNumber,
+                                      String date,
+                                      String status,
+                                      String markedBy) {
+
+        if (classId == null || classId.isBlank())
+            throw new IllegalArgumentException("classId is required");
+
+        if (rollNumber == null || rollNumber.isBlank())
+            throw new IllegalArgumentException("rollNumber is required");
+
+        if (date == null || date.isBlank())
+            throw new IllegalArgumentException("date is required (yyyy-MM-dd)");
+
+        if (status == null || status.isBlank())
+            throw new IllegalArgumentException("status is required");
+
+        String normalizedStatus = status.trim().toUpperCase();
+        if (!normalizedStatus.equals("PRESENT") && !normalizedStatus.equals("ABSENT"))
+            throw new IllegalArgumentException("status must be PRESENT or ABSENT");
+
+        // Firebase path: attendance/class/{classId}/{date}/{rollNumber}
+        DatabaseReference ref = attendanceRef
+                .child("class")
+                .child(classId)
+                .child(date)
+                .child(rollNumber);
+
+        AttendanceRecord record = new AttendanceRecord(
+                classId,
+                rollNumber,
+                date,
+                normalizedStatus,
+                markedBy
+        );
+
+        ref.setValueAsync(record);
+    }
+
+    // =========================================================
+    // GET ATTENDANCE (UID BASED – UNCHANGED)
+    // =========================================================
+
+
+
+    // =========================================================
+    // SUMMARY (UID BASED – UNCHANGED)
+    // =========================================================
+
+    // ------------------- GET SUMMARY (ROLL NUMBER BASED) --------------------
+
+    public AttendanceSummary getSummaryForStudentFromClass(
+            String classId,
+            String rollNumber) throws InterruptedException {
+
+        DatabaseReference classRef =
+                FirebaseDatabase.getInstance()
+                        .getReference("attendance")
+                        .child("class")
+                        .child(classId);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        int[] total = {0};
+        int[] present = {0};
+
+        classRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot classSnap) {
+                for (DataSnapshot dateSnap : classSnap.getChildren()) {
+                    DataSnapshot rollSnap = dateSnap.child(rollNumber);
+                    if (rollSnap.exists()) {
+                        total[0]++;
+                        String status =
+                                rollSnap.child("status").getValue(String.class);
+                        if ("PRESENT".equalsIgnoreCase(status)) {
+                            present[0]++;
+                        }
+                    }
+                }
+                latch.countDown();
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                latch.countDown();
+            }
+        });
+
+        latch.await(10, TimeUnit.SECONDS);
+
+        AttendanceSummary summary = new AttendanceSummary();
+        summary.setTotalClasses(total[0]);
+        summary.setPresentCount(present[0]);
+        summary.setAbsentCount(total[0] - present[0]);
+        summary.setAttendancePercentage(
+                total[0] == 0 ? 0 : (present[0] * 100.0 / total[0])
+        );
+
+        return summary;
+    }
+
+    // ------------------- GET ATTENDANCE (ROLL NUMBER BASED) --------------------
+    public List<AttendanceRecord> getAttendanceForStudentFromClass(
+            String classId,
+            String rollNumber
+    ) throws InterruptedException {
+
+        List<AttendanceRecord> list = new ArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        DatabaseReference ref =
+                FirebaseDatabase.getInstance()
+                        .getReference("attendance")
+                        .child("class")
+                        .child(classId);
+
+        ref.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                for (DataSnapshot dateSnap : snapshot.getChildren()) {
+                    DataSnapshot rollSnap =
+                            dateSnap.child(rollNumber);
+
+                    if (rollSnap.exists()) {
+                        AttendanceRecord r =
+                                rollSnap.getValue(AttendanceRecord.class);
+                        list.add(r);
+                    }
+                }
+                latch.countDown();
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                latch.countDown();
+            }
+        });
+
+        latch.await(10, TimeUnit.SECONDS);
+        return list;
+    }
+
+
+    public List<AttendanceRecord> getAttendanceForClass(String classId, String date) {
         final List<AttendanceRecord> result = new ArrayList<>();
         final CountDownLatch latch = new CountDownLatch(1);
 
-        if (courseId == null || courseId.isBlank()) {
-            // ---- ALL COURSES for this student ----
-            attendanceRef.addListenerForSingleValueEvent(new ValueEventListener() {
-                @Override
-                public void onDataChange(DataSnapshot snapshot) {
-                    if (snapshot.exists()) {
-                        for (DataSnapshot courseSnap : snapshot.getChildren()) {
-                            for (DataSnapshot dateSnap : courseSnap.getChildren()) {
-                                DataSnapshot stSnap = dateSnap.child(studentUid);
-                                if (stSnap.exists()) {
-                                    AttendanceRecord rec = stSnap.getValue(AttendanceRecord.class);
-                                    if (rec != null) {
-                                        result.add(rec);
-                                    }
-                                }
+        attendanceRef.child("class")
+                .child(classId)
+                .child(date)
+                .addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(DataSnapshot snapshot) {
+                        for (DataSnapshot rollSnap : snapshot.getChildren()) {
+                            AttendanceRecord rec = rollSnap.getValue(AttendanceRecord.class);
+                            if (rec != null) {
+                                result.add(rec);
                             }
                         }
+                        latch.countDown();
                     }
-                    latch.countDown();
-                }
 
-                @Override
-                public void onCancelled(DatabaseError error) {
-                    System.err.println("getAttendanceForStudent(all) cancelled: " + error);
-                    latch.countDown();
-                }
-            });
-        } else {
-            // ---- SINGLE COURSE ----
-            DatabaseReference ref = attendanceRef.child(courseId);
-
-            ref.addListenerForSingleValueEvent(new ValueEventListener() {
-                @Override
-                public void onDataChange(DataSnapshot snapshot) {
-                    if (snapshot.exists()) {
-                        for (DataSnapshot dateSnap : snapshot.getChildren()) {
-                            DataSnapshot stSnap = dateSnap.child(studentUid);
-                            if (stSnap.exists()) {
-                                AttendanceRecord rec = stSnap.getValue(AttendanceRecord.class);
-                                if (rec != null) {
-                                    result.add(rec);
-                                }
-                            }
-                        }
+                    @Override
+                    public void onCancelled(DatabaseError error) {
+                        latch.countDown();
                     }
-                    latch.countDown();
-                }
-
-                @Override
-                public void onCancelled(DatabaseError error) {
-                    System.err.println("getAttendanceForStudent(single) cancelled: " + error);
-                    latch.countDown();
-                }
-            });
-        }
+                });
 
         try {
             latch.await(5, TimeUnit.SECONDS);
@@ -137,35 +278,7 @@ public class AttendanceService {
             Thread.currentThread().interrupt();
         }
 
-        result.sort(Comparator.comparing(AttendanceRecord::getDate));
+        result.sort(Comparator.comparing(AttendanceRecord::getRollNumber));
         return result;
-    }
-
-    // ------------------- GET SUMMARY --------------------
-
-    /**
-     * If courseId is null/blank → summary across all courses.
-     * If courseId is provided → summary only for that course.
-     */
-    public AttendanceSummary getSummaryForStudent(String courseId,
-                                                  String studentUid) {
-
-        List<AttendanceRecord> records = getAttendanceForStudent(courseId, studentUid);
-
-        int total = records.size();
-        int present = 0;
-        int absent = 0;
-
-        for (AttendanceRecord r : records) {
-            if ("PRESENT".equalsIgnoreCase(r.getStatus())) present++;
-            if ("ABSENT".equalsIgnoreCase(r.getStatus())) absent++;
-        }
-
-        // for summary, if no specific courseId, label as "ALL"
-        String summaryCourseId = (courseId == null || courseId.isBlank())
-                ? "ALL"
-                : courseId;
-
-        return new AttendanceSummary(summaryCourseId, studentUid, total, present, absent);
     }
 }

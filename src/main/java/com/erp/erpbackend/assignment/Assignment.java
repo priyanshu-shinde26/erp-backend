@@ -39,6 +39,8 @@ public class Assignment {
         this.active = active;
     }
 
+    // ---------------- getters / setters ----------------
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 
@@ -71,4 +73,22 @@ public class Assignment {
 
     public String getQuestionFilePublicId() { return questionFilePublicId; }
     public void setQuestionFilePublicId(String questionFilePublicId) { this.questionFilePublicId = questionFilePublicId; }
+
+    // ---------------- NEW LOGIC (IMPORTANT) ----------------
+
+    /**
+     * Returns true if current time is after due date
+     */
+    public boolean isClosedByDate() {
+        return System.currentTimeMillis() > this.dueDate;
+    }
+
+    /**
+     * Final rule for student submission
+     * - assignment must be active
+     * - current time must be before due date
+     */
+    public boolean isSubmissionAllowed() {
+        return active && !isClosedByDate();
+    }
 }

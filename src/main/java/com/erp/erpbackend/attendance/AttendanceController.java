@@ -1,6 +1,9 @@
 package com.erp.erpbackend.attendance;
 
 import com.erp.erpbackend.service.RoleService;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseToken;
+import com.google.firebase.database.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -9,17 +12,25 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
+import java.time.LocalDate;
+import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequestMapping("/api/attendance")
 public class AttendanceController {
-
+    private final DatabaseReference studentsRef =
+            FirebaseDatabase.getInstance().getReference("students");
     private static final Logger log = LoggerFactory.getLogger(AttendanceController.class);
 
     private final AttendanceService attendanceService;
     private final RoleService roleService;
+
+    private final DatabaseReference attendanceRoot =
+            FirebaseDatabase.getInstance()
+                    .getReference("attendance")
+                    .child("ROLL_NUMBER");
 
     public AttendanceController(AttendanceService attendanceService,
                                 RoleService roleService) {
@@ -27,204 +38,410 @@ public class AttendanceController {
         this.roleService = roleService;
     }
 
-    // ---------- Helpers ----------
+    // ===================== HELPERS =====================
 
     private String getCurrentUid() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null) {
-            log.warn("getCurrentUid(): no Authentication in SecurityContext");
-            return null;
-        }
+        if (auth == null) return null;
         Object principal = auth.getPrincipal();
-        if (principal instanceof String s) {
-            return s;
-        }
-        log.warn("getCurrentUid(): principal is not String, was: {}", principal);
-        return null;
+        return (principal instanceof String s) ? s : null;
     }
 
-    // ADMIN or TEACHER are "privileged"
     private boolean isPrivileged(String role) {
         if (role == null) return false;
-        String r = role.toUpperCase();
-        return r.equals("ADMIN") || r.equals("TEACHER");
+        role = role.toUpperCase();
+        return role.equals("ADMIN") || role.equals("TEACHER");
     }
 
-    // ---------- DTO ----------
+    // ===================== NEW: CLASS MODEL =====================
+    public static class ClassModel {
+        public String classId;
+        public String name;
+        public String course;
+        public String year;
+
+        public ClassModel() {}
+
+        public ClassModel(String classId, String name, String course, String year) {
+            this.classId = classId;
+            this.name = name;
+            this.course = course;
+            this.year = year;
+        }
+    }
+
+    // ===================== NEW: /api/classes ENDPOINT =====================
+
+    // ===================== MARK ATTENDANCE =====================
 
     public static class MarkAttendanceRequest {
-        private String studentUid;
-        private String courseId;
-        private String date;   // yyyy-MM-dd
-        private String status; // PRESENT / ABSENT
+        private String rollNumber;
+        private String status;
 
-        public String getStudentUid() {
-            return studentUid;
-        }
+        public String getRollNumber() { return rollNumber; }
+        public void setRollNumber(String rollNumber) { this.rollNumber = rollNumber; }
 
-        public void setStudentUid(String studentUid) {
-            this.studentUid = studentUid;
-        }
-
-        public String getCourseId() {
-            return courseId;
-        }
-
-        public void setCourseId(String courseId) {
-            this.courseId = courseId;
-        }
-
-        public String getDate() {
-            return date;
-        }
-
-        public void setDate(String date) {
-            this.date = date;
-        }
-
-        public String getStatus() {
-            return status;
-        }
-
-        public void setStatus(String status) {
-            this.status = status;
-        }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
     }
 
-    // ---------- POST: mark attendance (ADMIN / TEACHER only) ----------
+    public static class ClassAttendanceRequest {
+        public String classId;
+        public String rollNumber;
+        public String status;
+
+        // Getters for proper JSON binding
+        public String getClassId() { return classId; }
+        public String getRollNumber() { return rollNumber; }
+        public String getStatus() { return status; }
+
+        // Setters
+        public void setClassId(String classId) { this.classId = classId; }
+        public void setRollNumber(String rollNumber) { this.rollNumber = rollNumber; }
+        public void setStatus(String status) { this.status = status; }
+    }
 
     @PostMapping("/mark")
     public ResponseEntity<?> mark(@RequestBody MarkAttendanceRequest req) {
-        log.info("POST /api/attendance/mark called: studentUid={}, courseId={}, date={}, status={}",
-                req.getStudentUid(), req.getCourseId(), req.getDate(), req.getStatus());
 
-        String currentUid = getCurrentUid();
-        if (currentUid == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Unauthorized"));
-        }
+        String uid = getCurrentUid();
+        if (uid == null)
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
 
-        String role = roleService.getRoleForUid(currentUid);
-        log.info("mark(): currentUid={}, role={}", currentUid, role);
+        String role = roleService.getRoleForUid(uid);
+        if (!isPrivileged(role))
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
 
-        // Only ADMIN or TEACHER can mark attendance
-        if (!isPrivileged(role)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of("error", "Only ADMIN or TEACHER can mark attendance"));
-        }
+        String today = LocalDate.now().toString();
+
+        attendanceService.markAttendanceByRollNumber(
+                req.getRollNumber(),
+                today,
+                req.getStatus(),
+                uid
+        );
+
+        return ResponseEntity.ok(
+                Map.of("message", "Attendance marked", "date", today)
+        );
+    }
+
+    @PostMapping("/class/mark")
+    public ResponseEntity<?> markAttendanceForClass(
+            @RequestBody ClassAttendanceRequest req) {
+
+        String uid = getCurrentUid();
+        if (uid == null)
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+
+        String role = roleService.getRoleForUid(uid);
+        if (!isPrivileged(role))
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+
+        String today = LocalDate.now().toString();
+
+        attendanceService.markAttendanceByClass(
+                req.classId,
+                req.rollNumber,
+                today,
+                req.status,
+                uid
+        );
+
+        return ResponseEntity.ok("Attendance marked successfully for " + req.rollNumber);
+    }
+
+    // ===================== STUDENT VIEW (FIXED) =====================
+
+    /**
+     * RETURNS: List<AttendanceRecord>
+     * Firebase path:
+     * attendance/ROLL_NUMBER/{date}/{rollNumber}
+     */
+    @GetMapping("/roll/{rollNumber}")
+    public ResponseEntity<?> getAttendanceByRollNumber(
+            @PathVariable String rollNumber) {
+
+        List<AttendanceRecord> result = new ArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        attendanceRoot.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot rootSnap) {
+                for (DataSnapshot dateSnap : rootSnap.getChildren()) {
+                    DataSnapshot rollSnap = dateSnap.child(rollNumber);
+                    if (rollSnap.exists()) {
+                        AttendanceRecord r =
+                                rollSnap.getValue(AttendanceRecord.class);
+                        result.add(r);
+                    }
+                }
+                latch.countDown();
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                latch.countDown();
+            }
+        });
 
         try {
-            attendanceService.markAttendance(
-                    req.getCourseId(),   // can be null or empty → service will handle
-                    req.getDate(),
-                    req.getStudentUid(),
-                    req.getStatus(),
-                    currentUid
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Timeout"));
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/class/{classId}/{date}")
+    public ResponseEntity<?> getAttendanceForClass(
+            @PathVariable String classId,
+            @PathVariable String date) {
+
+        List<AttendanceRecord> records = attendanceService.getAttendanceForClass(classId, date);
+        return ResponseEntity.ok(records);
+    }
+
+    // ===================== NEW STUDENT ENDPOINTS =====================
+
+    @GetMapping("/student/me")
+    public ResponseEntity<?> getMyAttendance(
+            @RequestHeader("Authorization") String authHeader) {
+
+        try {
+            String token = authHeader.substring(7);
+            FirebaseToken decoded =
+                    FirebaseAuth.getInstance().verifyIdToken(token);
+
+            String uid = decoded.getUid();
+
+            // ---------- LOAD STUDENT ----------
+            CountDownLatch latch = new CountDownLatch(1);
+            final DataSnapshot[] studentHolder = new DataSnapshot[1];
+
+            studentsRef.child(uid)
+                    .addListenerForSingleValueEvent(new ValueEventListener() {
+                        @Override
+                        public void onDataChange(DataSnapshot snapshot) {
+                            studentHolder[0] = snapshot;
+                            latch.countDown();
+                        }
+
+                        @Override
+                        public void onCancelled(DatabaseError error) {
+                            latch.countDown();
+                        }
+                    });
+
+            latch.await(10, TimeUnit.SECONDS);
+
+            if (studentHolder[0] == null || !studentHolder[0].exists()) {
+                return ResponseEntity.ok(Collections.emptyList());
+            }
+
+            String rollNo =
+                    studentHolder[0].child("rollNo").getValue(String.class);
+            String classId =
+                    studentHolder[0].child("classId").getValue(String.class);
+
+            if (rollNo == null || classId == null) {
+                return ResponseEntity.ok(Collections.emptyList());
+            }
+
+            return ResponseEntity.ok(
+                    attendanceService.getAttendanceForStudentFromClass(
+                            classId,
+                            rollNo
+                    )
             );
-            return ResponseEntity.ok(Map.of("message", "Attendance marked"));
-        } catch (IllegalArgumentException ex) {
-            log.warn("mark(): bad request: {}", ex.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", ex.getMessage()));
-        } catch (Exception ex) {
-            log.error("mark(): internal error", ex);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to mark attendance"));
+
+        } catch (Exception e) {
+            return ResponseEntity.ok(Collections.emptyList());
         }
     }
 
-    // ---------- GET: list records for student ----------
 
-    /**
-     * GET /api/attendance/student/{studentUid}
-     * GET /api/attendance/student/{studentUid}?courseId=SOMETHING (optional)
-     *
-     * - ADMIN / TEACHER can view any student's attendance.
-     * - STUDENT can view only their own attendance.
-     *
-     * If courseId is missing -> fetch **all courses** for that student.
-     */
-    @GetMapping("/student/{studentUid}")
-    public ResponseEntity<?> getAttendance(
-            @PathVariable String studentUid,
-            @RequestParam(name = "courseId", required = false) String courseId) {
-
-        log.info("GET /api/attendance/student/{} (courseId={})", studentUid, courseId);
-
-        String currentUid = getCurrentUid();
-        if (currentUid == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Unauthorized"));
-        }
-
-        String role = roleService.getRoleForUid(currentUid);
-        boolean privileged = isPrivileged(role);
-        log.info("getAttendance(): currentUid={}, role={}, privileged={}", currentUid, role, privileged);
-
-        // If not admin/teacher, must be the same student
-        if (!privileged && !currentUid.equals(studentUid)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of("error", "Not allowed to view other students' attendance"));
-        }
+    @GetMapping("/student/me/summary")
+    public ResponseEntity<?> getMyAttendanceSummary(
+            @RequestHeader("Authorization") String authHeader) {
 
         try {
-            List<AttendanceRecord> records =
-                    attendanceService.getAttendanceForStudent(courseId, studentUid);
-            return ResponseEntity.ok(records);
-        } catch (IllegalArgumentException ex) {
-            log.warn("getAttendance(): bad request: {}", ex.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", ex.getMessage()));
-        } catch (Exception ex) {
-            log.error("getAttendance(): internal error", ex);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to fetch attendance"));
+            String token = authHeader.substring(7);
+            FirebaseToken decoded =
+                    FirebaseAuth.getInstance().verifyIdToken(token);
+
+            String uid = decoded.getUid();
+
+            CountDownLatch latch = new CountDownLatch(1);
+            final DataSnapshot[] studentHolder = new DataSnapshot[1];
+
+            studentsRef.child(uid)
+                    .addListenerForSingleValueEvent(new ValueEventListener() {
+                        @Override
+                        public void onDataChange(DataSnapshot snapshot) {
+                            studentHolder[0] = snapshot;
+                            latch.countDown();
+                        }
+
+                        @Override
+                        public void onCancelled(DatabaseError error) {
+                            latch.countDown();
+                        }
+                    });
+
+            latch.await(10, TimeUnit.SECONDS);
+
+            if (studentHolder[0] == null || !studentHolder[0].exists()) {
+                return ResponseEntity.ok(new AttendanceSummary());
+            }
+
+            String rollNo =
+                    studentHolder[0].child("rollNo").getValue(String.class);
+            String classId =
+                    studentHolder[0].child("classId").getValue(String.class);
+
+            if (rollNo == null || classId == null) {
+                return ResponseEntity.ok(new AttendanceSummary());
+            }
+
+            return ResponseEntity.ok(
+                    attendanceService.getSummaryForStudentFromClass(
+                            classId,
+                            rollNo
+                    )
+            );
+
+        } catch (Exception e) {
+            return ResponseEntity.ok(new AttendanceSummary());
         }
     }
+    // ===================== SUMMARY (FIXED) =====================
 
-    // ---------- GET: summary for student ----------
+    @GetMapping("/roll/{rollNumber}/summary")
+    public ResponseEntity<?> getSummaryByRollNumber(
+            @PathVariable String rollNumber) {
 
-    /**
-     * GET /api/attendance/student/{studentUid}/summary
-     * GET /api/attendance/student/{studentUid}/summary?courseId=SOMETHING (optional)
-     *
-     * If courseId is missing -> summary across **all courses**.
-     */
-    @GetMapping("/student/{studentUid}/summary")
-    public ResponseEntity<?> getSummary(
-            @PathVariable String studentUid,
-            @RequestParam(name = "courseId", required = false) String courseId) {
+        CountDownLatch latch = new CountDownLatch(1);
 
-        log.info("GET /api/attendance/student/{}/summary (courseId={})", studentUid, courseId);
+        final int[] present = {0};
+        final int[] total = {0};
 
-        String currentUid = getCurrentUid();
-        if (currentUid == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Unauthorized"));
-        }
+        attendanceRoot.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot rootSnap) {
+                for (DataSnapshot dateSnap : rootSnap.getChildren()) {
+                    DataSnapshot rollSnap = dateSnap.child(rollNumber);
+                    if (rollSnap.exists()) {
+                        total[0]++;
+                        String status =
+                                rollSnap.child("status").getValue(String.class);
+                        if ("PRESENT".equalsIgnoreCase(status)) {
+                            present[0]++;
+                        }
+                    }
+                }
+                latch.countDown();
+            }
 
-        String role = roleService.getRoleForUid(currentUid);
-        boolean privileged = isPrivileged(role);
-        log.info("getSummary(): currentUid={}, role={}, privileged={}", currentUid, role, privileged);
-
-        if (!privileged && !currentUid.equals(studentUid)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of("error", "Not allowed to view other students' attendance"));
-        }
+            @Override
+            public void onCancelled(DatabaseError error) {
+                latch.countDown();
+            }
+        });
 
         try {
-            AttendanceSummary summary =
-                    attendanceService.getSummaryForStudent(courseId, studentUid);
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Timeout"));
+        }
+
+        int absent = total[0] - present[0];
+        double percent =
+                total[0] == 0 ? 0 : (present[0] * 100.0 / total[0]);
+
+        AttendanceSummary summary =
+                new AttendanceSummary(
+                        rollNumber,
+                        total[0],
+                        present[0],
+                        absent
+                );
+
+        summary.setAttendancePercentage(percent);
+
+        return ResponseEntity.ok(summary);
+    }
+
+    // =====================================================
+// TEACHER: VIEW SUMMARY OF ONE STUDENT (CLASS-BASED)
+// URL: /api/attendance/teacher/student/summary
+// =====================================================
+    @GetMapping("/teacher/student/summary")
+    public ResponseEntity<?> getStudentSummaryForTeacher(
+            @RequestParam("classId") String classId,
+            @RequestParam("rollNumber") String rollNumber,
+            @RequestHeader("Authorization") String authHeader) {
+
+        try {
+            // (Optional) verify teacher token
+            String token = authHeader.substring(7);
+            FirebaseAuth.getInstance().verifyIdToken(token);
+
+            DatabaseReference classRef =
+                    FirebaseDatabase.getInstance()
+                            .getReference("attendance")
+                            .child("class")
+                            .child(classId);
+
+            CountDownLatch latch = new CountDownLatch(1);
+            int[] total = {0};
+            int[] present = {0};
+
+            classRef.addListenerForSingleValueEvent(new ValueEventListener() {
+                @Override
+                public void onDataChange(DataSnapshot classSnap) {
+
+                    for (DataSnapshot dateSnap : classSnap.getChildren()) {
+                        DataSnapshot rollSnap = dateSnap.child(rollNumber);
+                        if (rollSnap.exists()) {
+                            total[0]++;
+                            String status =
+                                    rollSnap.child("status").getValue(String.class);
+                            if ("PRESENT".equalsIgnoreCase(status)) {
+                                present[0]++;
+                            }
+                        }
+                    }
+                    latch.countDown();
+                }
+
+                @Override
+                public void onCancelled(DatabaseError error) {
+                    latch.countDown();
+                }
+            });
+
+            latch.await(10, TimeUnit.SECONDS);
+
+            AttendanceSummary summary = new AttendanceSummary();
+            summary.setTotalClasses(total[0]);
+            summary.setPresentCount(present[0]);
+            summary.setAbsentCount(total[0] - present[0]);
+            summary.setAttendancePercentage(
+                    total[0] == 0 ? 0 : (present[0] * 100.0 / total[0])
+            );
 
             return ResponseEntity.ok(summary);
-        } catch (IllegalArgumentException ex) {
-            log.warn("getSummary(): bad request: {}", ex.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", ex.getMessage()));
-        } catch (Exception ex) {
-            log.error("getSummary(): internal error", ex);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to fetch attendance summary"));
+
+        } catch (Exception e) {
+            return ResponseEntity.ok(new AttendanceSummary());
         }
     }
+
+    // ===================== OLD APIs (UNCHANGED) =====================
+
+
 }
