@@ -8,9 +8,14 @@ public class AssignmentDtos {
         private String classId;
         private String subject;
         private long dueDate; // epoch millis
-
+        private Integer marks;      // 🔥 NEW
+        private String feedback;
         public CreateAssignmentRequest() {}
+        public Integer getMarks() { return marks; }
+        public void setMarks(Integer marks) { this.marks = marks; }
 
+        public String getFeedback() { return feedback; }
+        public void setFeedback(String feedback) { this.feedback = feedback; }
         public String getTitle() { return title; }
         public void setTitle(String title) { this.title = title; }
 

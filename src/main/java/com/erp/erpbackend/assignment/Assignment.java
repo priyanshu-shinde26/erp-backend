@@ -16,6 +16,10 @@ public class Assignment {
     private String questionFileUrl;      // Cloudinary secure URL
     private String questionFilePublicId; // Cloudinary public_id
 
+    // 🔥 NEW: Per-student view fields (not stored in assignments node)
+    private Integer marks;      // Student's marks for this assignment
+    private String feedback;    // Teacher feedback for this student
+
     public Assignment() {
     }
 
@@ -74,6 +78,14 @@ public class Assignment {
     public String getQuestionFilePublicId() { return questionFilePublicId; }
     public void setQuestionFilePublicId(String questionFilePublicId) { this.questionFilePublicId = questionFilePublicId; }
 
+    // 🔥 NEW getters/setters for grade fields
+
+    public Integer getMarks() { return marks; }
+    public void setMarks(Integer marks) { this.marks = marks; }
+
+    public String getFeedback() { return feedback; }
+    public void setFeedback(String feedback) { this.feedback = feedback; }
+
     // ---------------- NEW LOGIC (IMPORTANT) ----------------
 
     /**
@@ -90,5 +102,27 @@ public class Assignment {
      */
     public boolean isSubmissionAllowed() {
         return active && !isClosedByDate();
+    }
+
+    /**
+     * 🔥 Clone this assignment (used to attach marks/feedback per-student
+     *    without modifying the Firebase stored object).
+     */
+    public Assignment clone() {
+        Assignment copy = new Assignment(
+                this.id,
+                this.title,
+                this.description,
+                this.classId,
+                this.subject,
+                this.createdAt,
+                this.dueDate,
+                this.createdByUid,
+                this.active
+        );
+        copy.setQuestionFileUrl(this.questionFileUrl);
+        copy.setQuestionFilePublicId(this.questionFilePublicId);
+        // marks/feedback are set later in controller
+        return copy;
     }
 }

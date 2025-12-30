@@ -2,8 +2,12 @@ package com.erp.erpbackend.assignment;
 
 import com.cloudinary.Cloudinary;
 import com.cloudinary.utils.ObjectUtils;
+import com.erp.erpbackend.model.Student;
 import com.erp.erpbackend.service.RoleService;
 import com.google.firebase.database.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -13,17 +17,20 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class AssignmentService {
 
+    private static final Logger log = LoggerFactory.getLogger(AssignmentService.class);
+
     private final FirebaseDatabase firebaseDatabase;
     private final RoleService roleService;
-    private final Cloudinary cloudinary;   // <--- NEW FIELD
+    private final Cloudinary cloudinary;
 
     public AssignmentService(FirebaseDatabase firebaseDatabase,
                              RoleService roleService,
-                             Cloudinary cloudinary) {  // <--- INJECTED
+                             Cloudinary cloudinary) {
         this.firebaseDatabase = firebaseDatabase;
         this.roleService = roleService;
         this.cloudinary = cloudinary;
@@ -52,6 +59,11 @@ public class AssignmentService {
         }
 
         long now = Instant.now().toEpochMilli();
+
+        if (request.getClassId() == null || request.getClassId().isBlank()) {
+            throw new IllegalArgumentException("classId is required");
+        }
+
         Assignment assignment = new Assignment(
                 id,
                 request.getTitle(),
@@ -80,7 +92,11 @@ public class AssignmentService {
 
         existing.setTitle(request.getTitle());
         existing.setDescription(request.getDescription());
-        existing.setClassId(request.getClassId());
+
+        if (request.getClassId() != null && !request.getClassId().isBlank()) {
+            existing.setClassId(request.getClassId());
+        }
+
         existing.setSubject(request.getSubject());
         existing.setDueDate(request.getDueDate());
 
@@ -121,7 +137,7 @@ public class AssignmentService {
                     file.getBytes(),
                     ObjectUtils.asMap(
                             "public_id", publicId,
-                            "resource_type", "raw"  // pdf / any file
+                            "resource_type", "raw"
                     )
             );
 
@@ -169,6 +185,41 @@ public class AssignmentService {
         }
     }
 
+    // 🔥 FIXED: ADMIN gets ALL assignments from Firebase (same as getAllAssignments())
+    public List<Assignment> getAllAssignmentsAdmin(String adminUid) {
+        if (!roleService.hasRole(adminUid, "ADMIN")) {
+            throw new AccessDeniedException("Only admin can access all assignments");
+        }
+        // 🔥 Returns ALL active assignments (same logic as getAllAssignments())
+        CompletableFuture<List<Assignment>> future = new CompletableFuture<>();
+
+        assignmentsRef()
+                .addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(DataSnapshot snapshot) {
+                        List<Assignment> result = new ArrayList<>();
+                        for (DataSnapshot child : snapshot.getChildren()) {
+                            Assignment a = child.getValue(Assignment.class);
+                            if (a != null && a.isActive()) {
+                                result.add(a);
+                            }
+                        }
+                        future.complete(result);
+                    }
+
+                    @Override
+                    public void onCancelled(DatabaseError error) {
+                        future.completeExceptionally(error.toException());
+                    }
+                });
+
+        try {
+            return future.get();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException("Failed to load assignments", e);
+        }
+    }
+
     public List<Assignment> getAllAssignments() {
         CompletableFuture<List<Assignment>> future = new CompletableFuture<>();
 
@@ -200,6 +251,11 @@ public class AssignmentService {
     }
 
     public List<Assignment> getAssignmentsForClass(String classId) {
+
+        if (classId == null || classId.isBlank()) {
+            throw new IllegalArgumentException("classId is required");
+        }
+
         CompletableFuture<List<Assignment>> future = new CompletableFuture<>();
 
         assignmentsRef()
@@ -318,8 +374,8 @@ public class AssignmentService {
                     assignmentId,
                     studentUid,
                     now,
-                    secureUrl,   // REAL HTTPS URL HERE
-                    publicId,    // filePublicId
+                    secureUrl,
+                    publicId,
                     false,
                     null,
                     null,
@@ -526,5 +582,80 @@ public class AssignmentService {
     private boolean isTeacherOrAdmin(String uid) {
         return roleService.hasRole(uid, "TEACHER")
                 || roleService.hasRole(uid, "ADMIN");
+    }
+
+    // =============== 🔥 NEW: GET STUDENT CLASS & GRADES ===============
+
+    /**
+     * 🔥 Get student's classId from Firebase
+     */
+    public String getStudentClassId(String studentUid) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+
+        firebaseDatabase.getReference("students")  // Change to "users" if needed
+                .child(studentUid)
+                .child("classId")
+                .addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(DataSnapshot snapshot) {
+                        String classId = snapshot.getValue(String.class);
+                        future.complete(classId);
+                    }
+
+                    @Override
+                    public void onCancelled(DatabaseError error) {
+                        future.complete(null);
+                    }
+                });
+
+        try {
+            return future.get(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Failed to get classId for student: " + studentUid);
+            return null;
+        }
+    }
+
+    /**
+     * 🔥 Get student's submission + grade for specific assignment
+     */
+    public AssignmentSubmission findSubmissionByStudentAndAssignment(String studentUid, String assignmentId) {
+        CompletableFuture<AssignmentSubmission> future = new CompletableFuture<>();
+
+        submissionsRef()
+                .child(assignmentId)
+                .child(studentUid)
+                .limitToLast(1)
+                .addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(DataSnapshot snapshot) {
+                        if (snapshot.exists() && snapshot.hasChildren()) {
+                            DataSnapshot firstChild = snapshot.getChildren().iterator().next();
+                            AssignmentSubmission submission = firstChild.getValue(AssignmentSubmission.class);
+                            future.complete(submission);
+                        } else {
+                            future.complete(null);
+                        }
+                    }
+
+                    @Override
+                    public void onCancelled(DatabaseError error) {
+                        future.complete(null);
+                    }
+                });
+
+        try {
+            return future.get(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("No submission found for {} on assignment {}", studentUid, assignmentId);
+            return null;
+        }
+    }
+
+    /**
+     * 🔥 Check if user is student (for controller logic)
+     */
+    public boolean isStudent(String uid) {
+        return !isTeacherOrAdmin(uid);
     }
 }

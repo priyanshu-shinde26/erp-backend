@@ -13,6 +13,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/assignments")
@@ -33,15 +34,31 @@ public class AssignmentController {
         return auth.getName();
     }
 
-    // TEACHER / ADMIN: create assignment
+    // 🔥 NEW: ADMIN ONLY - ALL assignments (NO classId required)
+    @GetMapping("/admin")
+    public ResponseEntity<List<Assignment>> getAllAssignmentsAdmin() {
+        String uid = currentUid();
+        // 🔥 ADMIN gets ALL assignments across ALL classes
+        List<Assignment> allAssignments = assignmentService.getAllAssignmentsAdmin(uid);
+        return ResponseEntity.ok(allAssignments);
+    }
+
+    // ================= TEACHER / ADMIN =================
+
+    // ✅ CREATE ASSIGNMENT (classId REQUIRED)
     @PostMapping
-    public ResponseEntity<Assignment> createAssignment(@RequestBody CreateAssignmentRequest request) {
+    public ResponseEntity<?> createAssignment(@RequestBody CreateAssignmentRequest request) {
+        if (request.getClassId() == null || request.getClassId().isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "classId is required"));
+        }
+
         String uid = currentUid();
         Assignment created = assignmentService.createAssignment(request, uid);
         return ResponseEntity.ok(created);
     }
 
-    // TEACHER / ADMIN: update assignment
+    // UPDATE ASSIGNMENT
     @PutMapping("/{assignmentId}")
     public ResponseEntity<Assignment> updateAssignment(
             @PathVariable String assignmentId,
@@ -52,7 +69,7 @@ public class AssignmentController {
         return ResponseEntity.ok(updated);
     }
 
-    // TEACHER / ADMIN: upload or replace question PDF
+    // UPLOAD / REPLACE QUESTION PDF
     @PostMapping("/question/upload")
     public ResponseEntity<Assignment> uploadQuestionFile(
             @RequestParam("assignmentId") String assignmentId,
@@ -63,7 +80,7 @@ public class AssignmentController {
         return ResponseEntity.ok(updated);
     }
 
-    // TEACHER / ADMIN: delete assignment (single)
+    // DELETE SINGLE ASSIGNMENT
     @DeleteMapping("/{assignmentId}")
     public ResponseEntity<Void> deleteAssignment(@PathVariable String assignmentId) {
         String uid = currentUid();
@@ -71,7 +88,7 @@ public class AssignmentController {
         return ResponseEntity.noContent().build();
     }
 
-    // TEACHER / ADMIN: bulk delete ?ids=a&ids=b&ids=c
+    // BULK DELETE
     @DeleteMapping
     public ResponseEntity<Void> deleteAssignmentsBulk(@RequestParam("ids") List<String> ids) {
         String uid = currentUid();
@@ -79,46 +96,99 @@ public class AssignmentController {
         return ResponseEntity.noContent().build();
     }
 
-    // ANY AUTH: list assignments
-    // - if classId provided -> only that class
-    // - if no classId -> all assignments
-    @GetMapping
-    public ResponseEntity<List<Assignment>> getAssignments(
-            @RequestParam(value = "classId", required = false) String classId) {
+    // ================= FIXED: CLASS-WISE FETCH + STUDENT GRADES =================
 
-        List<Assignment> list;
-        if (classId == null || classId.isBlank()) {
-            list = assignmentService.getAllAssignments();
-        } else {
-            list = assignmentService.getAssignmentsForClass(classId);
+    // 🔥 STUDENTS: Get their class assignments + THEIR grades
+    // 🔥 TEACHERS: Get specific class assignments
+    @GetMapping
+    public ResponseEntity<?> getAssignments(
+            @RequestHeader("Authorization") String authHeader,
+            @RequestParam(required = false) String classId) {
+
+        try {
+            // 🔥 Extract UID from token (works for both students + teachers)
+            String uid = extractUidFromToken(authHeader);
+
+            // 🔥 For students: get their classId from Firebase
+            // 🔥 For teachers: use provided classId param
+            String finalClassId;
+            if (assignmentService.isStudent(uid)) {
+                // Student: use their actual classId
+                finalClassId = assignmentService.getStudentClassId(uid);
+                if (finalClassId == null || finalClassId.isBlank()) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                            .body(Map.of("error", "Student classId not found"));
+                }
+            } else {
+                // Teacher: use provided classId
+                finalClassId = classId;
+                if (finalClassId == null || finalClassId.isBlank()) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                            .body(Map.of("error", "classId is required for teachers"));
+                }
+            }
+
+            // 🔥 Get assignments for the class
+            List<Assignment> assignments = assignmentService.getAssignmentsForClass(finalClassId);
+
+            // 🔥 Add grades ONLY for students (their own submissions)
+            List<Assignment> result = assignments.stream().map(assignment -> {
+                Assignment item = assignment.clone(); // Copy assignment
+
+                if (assignmentService.isStudent(uid)) {
+                    // 🔥 Add THIS student's grade
+                    AssignmentSubmission submission = assignmentService
+                            .findSubmissionByStudentAndAssignment(uid, assignment.getId());
+
+                    if (submission != null) {
+                        item.setMarks(submission.getMarks());
+                        item.setFeedback(submission.getFeedback());
+                    }
+                }
+
+                return item;
+            }).collect(Collectors.toList());
+
+            return ResponseEntity.ok(result);
+
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Server error: " + e.getMessage()));
         }
-        return ResponseEntity.ok(list);
     }
 
-    // ANY AUTH: get one assignment
+    // 🔥 Extract UID from Firebase token (simple version)
+    private String extractUidFromToken(String authHeader) {
+        try {
+            String idToken = authHeader.replace("Bearer ", "");
+            // Use your existing currentUid() for Spring Security
+            return currentUid();
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid token");
+        }
+    }
+
+    // GET SINGLE ASSIGNMENT
     @GetMapping("/{assignmentId}")
     public ResponseEntity<Assignment> getAssignment(@PathVariable String assignmentId) {
         Assignment assignment = assignmentService.getAssignment(assignmentId);
         return ResponseEntity.ok(assignment);
     }
 
-    // STUDENT: submit assignment PDF
+    // ================= STUDENT =================
+
+    // SUBMIT ASSIGNMENT
     @PostMapping("/submissions/upload")
     public ResponseEntity<?> submitAssignment(
             @RequestParam("assignmentId") String assignmentId,
             @RequestParam("file") MultipartFile file) throws IOException {
 
         String uid = currentUid();
-
-        // 🔴 FETCH ASSIGNMENT
         Assignment assignment = assignmentService.getAssignment(assignmentId);
 
-        // 🔴 BLOCK LATE / INACTIVE SUBMISSION
         if (!assignment.isSubmissionAllowed()) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of(
-                            "error", "Assignment is closed. Submission not allowed."
-                    ));
+                    .body(Map.of("error", "Assignment is closed. Submission not allowed."));
         }
 
         AssignmentSubmission submission =
@@ -127,8 +197,7 @@ public class AssignmentController {
         return ResponseEntity.ok(submission);
     }
 
-
-    // STUDENT: delete own submission
+    // DELETE OWN SUBMISSION
     @DeleteMapping("/{assignmentId}/submissions/{submissionId}")
     public ResponseEntity<Void> deleteOwnSubmission(
             @PathVariable String assignmentId,
@@ -139,7 +208,9 @@ public class AssignmentController {
         return ResponseEntity.noContent().build();
     }
 
-    // TEACHER / ADMIN: get all submissions
+    // ================= TEACHER =================
+
+    // GET ALL SUBMISSIONS
     @GetMapping("/{assignmentId}/submissions")
     public ResponseEntity<List<AssignmentSubmission>> getSubmissionsForAssignment(
             @PathVariable String assignmentId) {
@@ -150,7 +221,7 @@ public class AssignmentController {
         return ResponseEntity.ok(submissions);
     }
 
-    // TEACHER / ADMIN: grade submission
+    // GRADE SUBMISSION
     @PostMapping("/{assignmentId}/submissions/{studentUid}/{submissionId}/grade")
     public ResponseEntity<AssignmentSubmission> gradeSubmission(
             @PathVariable String assignmentId,
@@ -165,7 +236,7 @@ public class AssignmentController {
         return ResponseEntity.ok(graded);
     }
 
-    // TEACHER / ADMIN: assignment status overview
+    // ASSIGNMENT STATUS
     @GetMapping("/{assignmentId}/status")
     public ResponseEntity<AssignmentStatusDto> getAssignmentStatus(
             @PathVariable String assignmentId) {
