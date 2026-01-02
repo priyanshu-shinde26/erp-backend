@@ -27,28 +27,31 @@ public class SecurityConfig {
                         // ---- Public / test endpoints ----
                         .requestMatchers("/api/test/**").permitAll()
 
-                        // ---- Assignment module (Firebase token required) ----
+                        // ---- Assignment module ----
                         .requestMatchers("/api/assignments/**").authenticated()
 
-                        // ---- Your existing APIs (adjust as you need) ----
+                        // ---- Existing APIs ----
                         .requestMatchers("/api/students/debug/**").hasRole("ADMIN")
                         .requestMatchers("/api/students/**").authenticated()
-
                         .requestMatchers("/api/attendance/**").authenticated()
 
+                        // ================= TIMETABLE ✅ COMPLETE =================
                         .requestMatchers(HttpMethod.GET, "/api/timetable/**")
-                        .hasAnyRole("ADMIN", "TEACHER", "STUDENT")
-                        .requestMatchers(HttpMethod.POST, "/api/timetable/**")
-                        .hasAnyRole("ADMIN", "TEACHER")
-                        .requestMatchers(HttpMethod.PUT, "/api/timetable/**")
-                        .hasAnyRole("ADMIN", "TEACHER")
-                        .requestMatchers(HttpMethod.DELETE, "/api/timetable/**")
-                        .hasAnyRole("ADMIN", "TEACHER")
+                        .hasAnyRole("TEACHER", "ADMIN", "STUDENT")  // ✅ GET view for all
 
-                        // Everything else (if you want them open):
+                        .requestMatchers(HttpMethod.POST, "/api/timetable/**")
+                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ POST create for teacher/admin
+
+                        .requestMatchers(HttpMethod.PUT, "/api/timetable/**")
+                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ PUT update
+
+                        .requestMatchers(HttpMethod.DELETE, "/api/timetable/**")
+                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ DELETE
+
+                        // ========================================================
+
                         .anyRequest().permitAll()
                 )
-                // Insert FirebaseTokenFilter before Spring's auth filter
                 .addFilterBefore(firebaseTokenFilter, UsernamePasswordAuthenticationFilter.class)
                 .httpBasic(Customizer.withDefaults());
 

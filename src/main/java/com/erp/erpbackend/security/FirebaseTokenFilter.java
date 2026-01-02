@@ -30,28 +30,47 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain)
             throws ServletException, IOException {
+
         String auth = request.getHeader("Authorization");
-        if (auth != null && auth.startsWith("Bearer ")) {
-            String token = auth.substring(7).trim();
-            try {
-                FirebaseToken decoded = FirebaseAuth.getInstance().verifyIdToken(token);
-                String uid = decoded.getUid();
+        log.info("🔍 FirebaseTokenFilter: path={}, auth header={}",
+                request.getRequestURI(),
+                auth != null ? auth.substring(0, Math.min(50, auth.length())) + "..." : "NULL"); // ✅ LOG PATH + HEADER
 
-                // Minimal authority: read role if you want to attach roles (fast path uses cache)
-                String role = roleService.getRoleForUid(uid);
-                SimpleGrantedAuthority authority =
-                        role == null ? new SimpleGrantedAuthority("ROLE_USER") :
-                                new SimpleGrantedAuthority("ROLE_" + role.toUpperCase());
-
-                UsernamePasswordAuthenticationToken authentication =
-                        new UsernamePasswordAuthenticationToken(uid, null,
-                                Collections.singletonList(authority));
-                SecurityContextHolder.getContext().setAuthentication(authentication);
-            } catch (Exception e) {
-                log.warn("Firebase token verification failed", e);
-                SecurityContextHolder.clearContext();
-            }
+        if (auth == null || !auth.startsWith("Bearer ")) {
+            log.warn("❌ No Bearer token");
+            response.setStatus(401);
+            response.getWriter().write("Missing Bearer token");
+            return; // ✅ STOP HERE - DON'T PROCEED
         }
-        filterChain.doFilter(request, response);
+
+        String token = auth.substring(7).trim();
+        log.info("🔍 Token length={}", token.length()); // ✅ LOG TOKEN LENGTH
+
+        try {
+            FirebaseToken decoded = FirebaseAuth.getInstance().verifyIdToken(token);
+            String uid = decoded.getUid();
+            log.info("✅ Token verified: uid={}", uid); // ✅ SUCCESS LOG
+
+            String role = roleService.getRoleForUid(uid);
+            log.info("📋 Role for uid {} = {}", uid, role); // ✅ LOG ROLE
+
+            SimpleGrantedAuthority authority =
+                    role == null ? new SimpleGrantedAuthority("ROLE_USER") :
+                            new SimpleGrantedAuthority("ROLE_" + role.toUpperCase());
+
+            UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(uid, null,
+                            Collections.singletonList(authority));
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+
+            log.info("✅ Auth set: uid={}, authorities={}", uid, authority.getAuthority()); // ✅ AUTH SET
+
+            filterChain.doFilter(request, response); // ✅ ONLY HERE
+        } catch (Exception e) {
+            log.error("❌ Token verification FAILED: {}", e.getMessage(), e); // ✅ DETAILED ERROR
+            response.setStatus(401);
+            response.getWriter().write("Invalid token: " + e.getMessage());
+            return; // ✅ STOP HERE - DON'T PROCEED
+        }
     }
 }

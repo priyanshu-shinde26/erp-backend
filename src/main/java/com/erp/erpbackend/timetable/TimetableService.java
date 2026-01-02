@@ -1,70 +1,124 @@
 package com.erp.erpbackend.timetable;
 
-import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Sort;
-import org.springframework.http.HttpStatus;
+import com.erp.erpbackend.service.RoleService;
+import com.google.firebase.database.*;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
-import java.time.DayOfWeek;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
-@Transactional
 public class TimetableService {
 
-    private final TimetableEntryRepository repository;
+    private final FirebaseDatabase database;
+    private final RoleService roleService;
 
-    public TimetableEntry create(TimetableEntryRequest request) {
-        TimetableEntry entry = TimetableEntry.builder()
-                .dayOfWeek(request.getDayOfWeek())
-                .startTime(request.getStartTime())
-                .endTime(request.getEndTime())
-                .subjectName(request.getSubjectName())
-                .teacherName(request.getTeacherName())
-                .classroom(request.getClassroom())
-                .build();
-
-        return repository.save(entry);
+    public TimetableService(FirebaseDatabase database, RoleService roleService) {
+        this.database = database;
+        this.roleService = roleService;
     }
 
-    public TimetableEntry update(Long id, TimetableEntryRequest request) {
-        TimetableEntry existing = repository.findById(id)
-                .orElseThrow(() ->
-                        new ResponseStatusException(HttpStatus.NOT_FOUND,
-                                "Timetable entry not found: " + id));
-
-        existing.setDayOfWeek(request.getDayOfWeek());
-        existing.setStartTime(request.getStartTime());
-        existing.setEndTime(request.getEndTime());
-        existing.setSubjectName(request.getSubjectName());
-        existing.setTeacherName(request.getTeacherName());
-        existing.setClassroom(request.getClassroom());
-
-        return repository.save(existing);
+    public String getCurrentUid() {
+        // Extract from SecurityContextHolder / JWT token
+        return "current-user-uid";  // Replace with your auth logic
     }
 
-    public void delete(Long id) {
-        TimetableEntry existing = repository.findById(id)
-                .orElseThrow(() ->
-                        new ResponseStatusException(HttpStatus.NOT_FOUND,
-                                "Timetable entry not found: " + id));
+    // Extract unique classIds from students
+    public List<String> getClasses() {
+        DatabaseReference studentsRef = database.getReference("students");
+        List<String> classes = new ArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
 
-        repository.delete(existing);
+        studentsRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                Set<String> uniqueClasses = new HashSet<>();
+                for (DataSnapshot student : snapshot.getChildren()) {
+                    String classId = student.child("classId").getValue(String.class);
+                    if (classId != null) uniqueClasses.add(classId);
+                }
+                classes.addAll(uniqueClasses);
+                latch.countDown();
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                latch.countDown();
+            }
+        });
+
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        Collections.sort(classes);
+        return classes;
     }
 
-    @Transactional(readOnly = true)
-    public List<TimetableEntry> getAll() {
-        return repository.findAll(
-                Sort.by("dayOfWeek").ascending()
-                        .and(Sort.by("startTime").ascending())
-        );
+    public void createPeriod(String classId, String day, SchedulePeriod period) {
+        String periodId = database.getReference("timetables/" + classId + "/" + day).push().getKey();
+        database.getReference("timetables").child(classId).child(day).child(periodId).setValueAsync(period);
     }
 
-    @Transactional(readOnly = true)
-    public List<TimetableEntry> getByDay(DayOfWeek dayOfWeek) {
-        return repository.findByDayOfWeekOrderByStartTime(dayOfWeek.name());
+    public Map<String, List<SchedulePeriod>> getClassTimetable(String classId) {
+        Map<String, List<SchedulePeriod>> timetable = new HashMap<>();
+        String[] days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday"};
+
+        for (String day : days) {
+            DatabaseReference dayRef = database.getReference("timetables").child(classId).child(day);
+            List<SchedulePeriod> periods = new ArrayList<>();
+
+            CountDownLatch latch = new CountDownLatch(1);
+            dayRef.addListenerForSingleValueEvent(new ValueEventListener() {
+                @Override
+                public void onDataChange(DataSnapshot snapshot) {
+                    for (DataSnapshot periodSnapshot : snapshot.getChildren()) {
+                        SchedulePeriod p = periodSnapshot.getValue(SchedulePeriod.class);
+                        if (p != null) periods.add(p);
+                    }
+                    latch.countDown();
+                }
+                @Override
+                public void onCancelled(DatabaseError error) { latch.countDown(); }
+            });
+
+            try { latch.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (!periods.isEmpty()) timetable.put(day, periods);
+        }
+        return timetable;
+    }
+
+    public List<SchedulePeriod> getDaySchedule(String classId, String day) {
+        DatabaseReference dayRef = database.getReference("timetables").child(classId).child(day);
+        List<SchedulePeriod> periods = new ArrayList<>();
+
+        CountDownLatch latch = new CountDownLatch(1);
+        dayRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                for (DataSnapshot periodSnapshot : snapshot.getChildren()) {
+                    SchedulePeriod p = periodSnapshot.getValue(SchedulePeriod.class);
+                    if (p != null) periods.add(p);
+                }
+                latch.countDown();
+            }
+            @Override
+            public void onCancelled(DatabaseError error) { latch.countDown(); }
+        });
+
+        try { latch.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        return periods;
+    }
+
+    public void updatePeriod(String classId, String day, String periodId, SchedulePeriod period) {
+        database.getReference("timetables").child(classId).child(day).child(periodId).setValueAsync(period);
+    }
+
+    public void deletePeriod(String classId, String day, String periodId) {
+        database.getReference("timetables").child(classId).child(day).child(periodId).removeValueAsync();
     }
 }
