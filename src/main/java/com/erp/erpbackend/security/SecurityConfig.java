@@ -4,12 +4,14 @@ import com.erp.erpbackend.service.RoleService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
+@EnableWebSecurity
 public class SecurityConfig {
 
     @Bean
@@ -18,42 +20,56 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http,
-                                           FirebaseTokenFilter firebaseTokenFilter) throws Exception {
+    public SecurityFilterChain filterChain(
+            HttpSecurity http,
+            FirebaseTokenFilter firebaseTokenFilter
+    ) throws Exception {
 
         http
                 .csrf(csrf -> csrf.disable())
+                // 🔥 SESSION MANAGEMENT: STATELESS (MANDATORY FOR JWT/FIREBASE)
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                )
                 .authorizeHttpRequests(auth -> auth
-                        // ---- Public / test endpoints ----
+                        // ================= ACADEMIC MODULE =================
+                        .requestMatchers("/api/academic/tests").hasAnyRole("ADMIN", "TEACHER")
+                        .requestMatchers("/api/academic/**").authenticated()
+                        // ================= PUBLIC / TEST =================
                         .requestMatchers("/api/test/**").permitAll()
 
-                        // ---- Assignment module ----
+                        // ================= ASSIGNMENTS =================
                         .requestMatchers("/api/assignments/**").authenticated()
 
-                        // ---- Existing APIs ----
-                        .requestMatchers("/api/students/debug/**").hasRole("ADMIN")
+                        // ================= STUDENTS =================
+                        .requestMatchers("/api/students/debug/**").hasAuthority("ADMIN")
                         .requestMatchers("/api/students/**").authenticated()
+
+                        // ================= ATTENDANCE =================
                         .requestMatchers("/api/attendance/**").authenticated()
 
-                        // ================= TIMETABLE ✅ COMPLETE =================
+                        // ================= TIMETABLE =================
                         .requestMatchers(HttpMethod.GET, "/api/timetable/**")
-                        .hasAnyRole("TEACHER", "ADMIN", "STUDENT")  // ✅ GET view for all
+                        .hasAnyAuthority("TEACHER", "ADMIN", "STUDENT")
 
                         .requestMatchers(HttpMethod.POST, "/api/timetable/**")
-                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ POST create for teacher/admin
+                        .hasAnyAuthority("TEACHER", "ADMIN")
 
                         .requestMatchers(HttpMethod.PUT, "/api/timetable/**")
-                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ PUT update
+                        .hasAnyAuthority("TEACHER", "ADMIN")
 
                         .requestMatchers(HttpMethod.DELETE, "/api/timetable/**")
-                        .hasAnyRole("TEACHER", "ADMIN")  // ✅ DELETE
+                        .hasAnyAuthority("TEACHER", "ADMIN")
 
-                        // ========================================================
-
+                        // ================= FALLBACK =================
                         .anyRequest().permitAll()
-                )
-                .addFilterBefore(firebaseTokenFilter, UsernamePasswordAuthenticationFilter.class)
-                .httpBasic(Customizer.withDefaults());
+                );
+
+        // 🔥 VERY IMPORTANT: REGISTER THE FILTER
+        http.addFilterBefore(
+                firebaseTokenFilter,
+                UsernamePasswordAuthenticationFilter.class
+        );
 
         return http.build();
     }

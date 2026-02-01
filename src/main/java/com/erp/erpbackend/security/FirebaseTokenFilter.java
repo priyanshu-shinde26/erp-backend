@@ -1,8 +1,8 @@
 package com.erp.erpbackend.security;
 
+import com.erp.erpbackend.service.RoleService;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseToken;
-import com.erp.erpbackend.service.RoleService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,9 +15,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.List;
 
 public class FirebaseTokenFilter extends OncePerRequestFilter {
+
     private final Logger log = LoggerFactory.getLogger(FirebaseTokenFilter.class);
     private final RoleService roleService;
 
@@ -26,51 +27,57 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain filterChain)
-            throws ServletException, IOException {
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain
+    ) throws ServletException, IOException {
 
-        String auth = request.getHeader("Authorization");
-        log.info("🔍 FirebaseTokenFilter: path={}, auth header={}",
+        String authHeader = request.getHeader("Authorization");
+
+        // Logging the request for debugging
+        log.info("🔍 FirebaseTokenFilter: path={}, auth header present={}",
                 request.getRequestURI(),
-                auth != null ? auth.substring(0, Math.min(50, auth.length())) + "..." : "NULL"); // ✅ LOG PATH + HEADER
+                authHeader != null);
 
-        if (auth == null || !auth.startsWith("Bearer ")) {
-            log.warn("❌ No Bearer token");
-            response.setStatus(401);
-            response.getWriter().write("Missing Bearer token");
-            return; // ✅ STOP HERE - DON'T PROCEED
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            log.warn("❌ No Bearer token found");
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.getWriter().write("Missing or invalid Bearer token");
+            return;
         }
 
-        String token = auth.substring(7).trim();
-        log.info("🔍 Token length={}", token.length()); // ✅ LOG TOKEN LENGTH
+        String token = authHeader.substring(7); // remove "Bearer "
 
         try {
-            FirebaseToken decoded = FirebaseAuth.getInstance().verifyIdToken(token);
-            String uid = decoded.getUid();
-            log.info("✅ Token verified: uid={}", uid); // ✅ SUCCESS LOG
+            // 🔥 This is what tells Spring: "This Firebase token is valid"
+            FirebaseToken decodedToken = FirebaseAuth.getInstance().verifyIdToken(token);
 
-            String role = roleService.getRoleForUid(uid);
-            log.info("📋 Role for uid {} = {}", uid, role); // ✅ LOG ROLE
+            String uid = decodedToken.getUid();
+            String role = roleService.getRoleForUid(uid); // ADMIN / TEACHER / STUDENT
 
-            SimpleGrantedAuthority authority =
-                    role == null ? new SimpleGrantedAuthority("ROLE_USER") :
-                            new SimpleGrantedAuthority("ROLE_" + role.toUpperCase());
+            // Ensure role is not null and assign it to authorities
+            String assignedRole = (role != null) ? role : "USER";
 
             UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(uid, null,
-                            Collections.singletonList(authority));
+                    new UsernamePasswordAuthenticationToken(
+                            uid,
+                            null,
+                            List.of(new SimpleGrantedAuthority(assignedRole))
+                    );
+
             SecurityContextHolder.getContext().setAuthentication(authentication);
+            request.setAttribute("uid", uid);
 
-            log.info("✅ Auth set: uid={}, authorities={}", uid, authority.getAuthority()); // ✅ AUTH SET
+            log.info("✅ Auth set: uid={}, role={}", uid, assignedRole);
 
-            filterChain.doFilter(request, response); // ✅ ONLY HERE
+            // Proceed to the next filter
+            filterChain.doFilter(request, response);
+
         } catch (Exception e) {
-            log.error("❌ Token verification FAILED: {}", e.getMessage(), e); // ✅ DETAILED ERROR
-            response.setStatus(401);
+            log.error("❌ Token verification FAILED: {}", e.getMessage());
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.getWriter().write("Invalid token: " + e.getMessage());
-            return; // ✅ STOP HERE - DON'T PROCEED
         }
     }
 }
