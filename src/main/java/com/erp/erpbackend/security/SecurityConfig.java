@@ -27,26 +27,41 @@ public class SecurityConfig {
 
         http
                 .csrf(csrf -> csrf.disable())
-                // 🔥 SESSION MANAGEMENT: STATELESS (MANDATORY FOR JWT/FIREBASE)
-                .sessionManagement(session -> session
-                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+
+                // 🔥 Stateless session (required for Firebase JWT)
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
+
                 .authorizeHttpRequests(auth -> auth
-                        // ================= ACADEMIC MODULE =================
-                        .requestMatchers("/api/academic/tests").hasAnyRole("ADMIN", "TEACHER")
-                        .requestMatchers("/api/academic/**").authenticated()
-                        // ================= PUBLIC / TEST =================
+
+                        // ================= PUBLIC ENDPOINTS =================
+                        .requestMatchers("/api/ai/**").permitAll()
+                        .requestMatchers("/api/health/**").permitAll()
+                        .requestMatchers("/smoke/**").permitAll()
                         .requestMatchers("/api/test/**").permitAll()
 
+                        // ================= ACADEMIC MODULE =================
+                        .requestMatchers("/api/academic/tests")
+                        .hasAnyRole("ADMIN", "TEACHER")
+
+                        .requestMatchers("/api/academic/**")
+                        .authenticated()
+
                         // ================= ASSIGNMENTS =================
-                        .requestMatchers("/api/assignments/**").authenticated()
+                        .requestMatchers("/api/assignments/**")
+                        .authenticated()
 
                         // ================= STUDENTS =================
-                        .requestMatchers("/api/students/debug/**").hasAuthority("ADMIN")
-                        .requestMatchers("/api/students/**").authenticated()
+                        .requestMatchers("/api/students/debug/**")
+                        .hasAuthority("ADMIN")
+
+                        .requestMatchers("/api/students/**")
+                        .authenticated()
 
                         // ================= ATTENDANCE =================
-                        .requestMatchers("/api/attendance/**").authenticated()
+                        .requestMatchers("/api/attendance/**")
+                        .authenticated()
 
                         // ================= TIMETABLE =================
                         .requestMatchers(HttpMethod.GET, "/api/timetable/**")
@@ -61,11 +76,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.DELETE, "/api/timetable/**")
                         .hasAnyAuthority("TEACHER", "ADMIN")
 
-                        // ================= FALLBACK =================
-                        .anyRequest().permitAll()
+                        // ================= EVERYTHING ELSE =================
+                        .anyRequest().authenticated()
                 );
 
-        // 🔥 VERY IMPORTANT: REGISTER THE FILTER
+        // 🔥 Register Firebase authentication filter
         http.addFilterBefore(
                 firebaseTokenFilter,
                 UsernamePasswordAuthenticationFilter.class
