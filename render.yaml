@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: erp-backend
+    runtime: java
+    buildCommand: ./mvnw clean package -DskipTests
+    startCommand: java -jar target/*.jar
+    envVars:
+      - key: JAVA_VERSION
+        value: 17
