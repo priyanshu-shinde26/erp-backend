@@ -1,26 +1,24 @@
 package com.erp.erpbackend.ai;
 
+import java.util.List;
+
 public class MultimodalRequest {
     private String message;
-    private String fileBase64;      // Base64 encoded file content
-    private String mimeType;        // e.g. "application/pdf", "image/png", etc.
-    private String fileName;
-    private String role;            // "student", "teacher", "admin"
+    private String base64Image;   // optional: base64-encoded image
+    private String mimeType;      // e.g. "image/jpeg"
+    private List<ChatMessage> history;
 
     public MultimodalRequest() {}
 
     public String getMessage() { return message; }
     public void setMessage(String message) { this.message = message; }
 
-    public String getFileBase64() { return fileBase64; }
-    public void setFileBase64(String fileBase64) { this.fileBase64 = fileBase64; }
+    public String getBase64Image() { return base64Image; }
+    public void setBase64Image(String base64Image) { this.base64Image = base64Image; }
 
     public String getMimeType() { return mimeType; }
     public void setMimeType(String mimeType) { this.mimeType = mimeType; }
 
-    public String getFileName() { return fileName; }
-    public void setFileName(String fileName) { this.fileName = fileName; }
-
-    public String getRole() { return role; }
-    public void setRole(String role) { this.role = role; }
+    public List<ChatMessage> getHistory() { return history; }
+    public void setHistory(List<ChatMessage> history) { this.history = history; }
 }

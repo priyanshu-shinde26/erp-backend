@@ -27,6 +27,13 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        // ✅ Skip token check for AI routes — open to all CampusSync users
+        return path.startsWith("/api/ai/");
+    }
+
+    @Override
     protected void doFilterInternal(
             HttpServletRequest request,
             HttpServletResponse response,
@@ -35,7 +42,6 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
 
         String authHeader = request.getHeader("Authorization");
 
-        // Logging the request for debugging
         log.info("🔍 FirebaseTokenFilter: path={}, auth header present={}",
                 request.getRequestURI(),
                 authHeader != null);
@@ -47,16 +53,14 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
             return;
         }
 
-        String token = authHeader.substring(7); // remove "Bearer "
+        String token = authHeader.substring(7);
 
         try {
-            // 🔥 This is what tells Spring: "This Firebase token is valid"
             FirebaseToken decodedToken = FirebaseAuth.getInstance().verifyIdToken(token);
 
             String uid = decodedToken.getUid();
-            String role = roleService.getRoleForUid(uid); // ADMIN / TEACHER / STUDENT
+            String role = roleService.getRoleForUid(uid);
 
-            // Ensure role is not null and assign it to authorities
             String assignedRole = (role != null) ? role : "USER";
 
             UsernamePasswordAuthenticationToken authentication =
@@ -71,7 +75,6 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
 
             log.info("✅ Auth set: uid={}, role={}", uid, assignedRole);
 
-            // Proceed to the next filter
             filterChain.doFilter(request, response);
 
         } catch (Exception e) {

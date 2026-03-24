@@ -1,7 +1,7 @@
 package com.erp.erpbackend.ai;
 
 public class ChatMessage {
-    private String role;   // "user" or "model"
+    private String role;   // "user" or "assistant"
     private String content;
 
     public ChatMessage() {}

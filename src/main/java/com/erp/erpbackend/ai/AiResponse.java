@@ -2,24 +2,28 @@ package com.erp.erpbackend.ai;
 
 public class AiResponse {
     private String reply;
+    private String model;
     private boolean success;
     private String error;
 
     public AiResponse() {}
 
-    public AiResponse(String reply, boolean success) {
+    public AiResponse(String reply, String model) {
         this.reply = reply;
-        this.success = success;
+        this.model = model;
+        this.success = true;
     }
 
-    public AiResponse(String reply, boolean success, String error) {
-        this.reply = reply;
-        this.success = success;
+    public AiResponse(String error, boolean success) {
         this.error = error;
+        this.success = success;
     }
 
     public String getReply() { return reply; }
     public void setReply(String reply) { this.reply = reply; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
 
     public boolean isSuccess() { return success; }
     public void setSuccess(boolean success) { this.success = success; }
