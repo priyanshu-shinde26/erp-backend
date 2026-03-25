@@ -10,11 +10,13 @@ import com.google.firebase.database.FirebaseDatabase;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.ContextClosedEvent;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 
@@ -24,6 +26,10 @@ public class FirebaseConfig implements ApplicationListener<ContextClosedEvent> {
     private final Logger log = LoggerFactory.getLogger(FirebaseConfig.class);
     private FirebaseApp firebaseApp;
 
+    // ✅ ADDED: Inject the environment variable for Render deployment
+    @Value("${FIREBASE_CONFIG_PATH:}")
+    private String firebaseConfigPath;
+
     /**
      * ✅ UPDATED: Initialize Firebase using @PostConstruct
      * This ensures Firebase is ready before any beans are requested.
@@ -32,11 +38,20 @@ public class FirebaseConfig implements ApplicationListener<ContextClosedEvent> {
     public void init() {
         try {
             if (FirebaseApp.getApps().isEmpty()) {
-                // ✅ Use ClassPathResource to find the file in src/main/resources
-                org.springframework.core.io.ClassPathResource resource =
-                        new org.springframework.core.io.ClassPathResource("firebase-service-account.json");
+                InputStream serviceAccount;
 
-                InputStream serviceAccount = resource.getInputStream();
+                // ✅ UPDATED logic: Check for Render environment variable first
+                if (firebaseConfigPath != null && !firebaseConfigPath.isEmpty()) {
+                    File file = new File(firebaseConfigPath);
+                    serviceAccount = new FileInputStream(file);
+                    log.info("✅ Firebase Admin initialized via external secret file path (Render).");
+                } else {
+                    // ✅ Fallback to ClassPathResource for local development
+                    org.springframework.core.io.ClassPathResource resource =
+                            new org.springframework.core.io.ClassPathResource("firebase-service-account.json");
+                    serviceAccount = resource.getInputStream();
+                    log.info("✅ Firebase Admin initialized via ClassPath (Local).");
+                }
 
                 FirebaseOptions options = FirebaseOptions.builder()
                         .setCredentials(GoogleCredentials.fromStream(serviceAccount))
@@ -44,7 +59,6 @@ public class FirebaseConfig implements ApplicationListener<ContextClosedEvent> {
                         .build();
 
                 firebaseApp = FirebaseApp.initializeApp(options);
-                log.info("✅ Firebase Admin initialized via ClassPath.");
             }
         } catch (Exception e) {
             log.error("❌ Firebase initialization failed: {}", e.getMessage());
